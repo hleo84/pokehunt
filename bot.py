@@ -49,6 +49,7 @@ IN_STOCK_STATUSES = {"IN_STOCK", "LIMITED_STOCK"}
 # Bot + globals
 # ---------------------------------------------------------------------------
 intents = discord.Intents.default()
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 api_client: TargetAPIClient
 redis_client: aioredis.Redis

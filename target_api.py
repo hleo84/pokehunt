@@ -95,10 +95,8 @@ class TargetAPIClient:
     async def _search_one_term(self, term: str, count: int) -> list[dict]:
         params = {
             "search_term": term,
-            "category": "5xtg6",
             "channel": "WEB",
             "count": count,
-            # false = include backend-staged / unavailable products too
             "default_purchasability_filter": "false",
             "include_list": "facets,promotions",
             "offset": 0,
@@ -107,7 +105,13 @@ class TargetAPIClient:
             "visitor_id": _fresh_visitor_id(),
         }
         data = await self._get_json(SEARCH_URL, params)
-        return _parse_search(data) if data else []
+        if not data:
+            return []
+        results = _parse_search(data)
+        if not results:
+            total = data.get("products", {}).get("total_results", "unknown")
+            logger.warning("Search for %r returned 0 parsed products (API total_results=%s)", term, total)
+        return results
 
     async def search_all_pokemon_tcg(self, count: int = 24) -> list[dict]:
         """Run both search terms in parallel and deduplicate by TCIN."""
