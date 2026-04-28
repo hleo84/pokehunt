@@ -130,12 +130,12 @@ class TargetAPIClient:
             return []
         params = {
             "tcin": ",".join(tcins),
-            "store_id": "3991",
-            "zip": "10001",
-            "state": "NY",
-            "latitude": "40.750",
-            "longitude": "-73.997",
-            "scheduled_delivery_store_id": "3991",
+            "store_id": "2307",
+            "zip": "91506",
+            "state": "CA",
+            "latitude": "34.170",
+            "longitude": "-118.270",
+            "scheduled_delivery_store_id": "2307",
             "paid_membership": "false",
             "base_membership": "false",
             "card_membership": "false",
