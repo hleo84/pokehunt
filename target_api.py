@@ -154,7 +154,7 @@ class TargetAPIClient:
         logger.info("check_tcins raw response keys: %s", keys)
         results = _parse_redsky(data)
         if not results:
-            logger.warning("check_tcins: parsed 0 products, raw sample: %s", str(data)[:500])
+            logger.warning("check_tcins: parsed 0 products, raw sample: %s", str(data)[:2000])
         return results
 
 
@@ -192,7 +192,16 @@ def _parse_search(data: dict) -> list[dict]:
 
 def _parse_redsky(data: dict) -> list[dict]:
     results = []
-    for item in data.get("data", {}).get("product_summaries", []):
+    raw_items = data.get("data", {}).get("product_summaries", [])
+    logger.info("_parse_redsky: %d raw items found at data.product_summaries", len(raw_items))
+    if not raw_items:
+        # Try to find where products actually are
+        if isinstance(data, dict):
+            for k, v in data.items():
+                logger.info("  top-level key %r → type %s, len %s", k, type(v).__name__, len(v) if hasattr(v, "__len__") else "n/a")
+
+    skipped_price = 0
+    for item in raw_items:
         tcin = item.get("tcin", "")
         if not tcin:
             continue
@@ -216,6 +225,8 @@ def _parse_redsky(data: dict) -> list[dict]:
 
         # skip items not at regular MSRP (e.g. clearance, sale)
         if price_type and price_type != "reg":
+            logger.debug("Skipping TCIN %s — price_type=%r", tcin, price_type)
+            skipped_price += 1
             continue
 
         price_str = f"${current_retail:.2f}" if current_retail else formatted_price
@@ -227,4 +238,7 @@ def _parse_redsky(data: dict) -> list[dict]:
             "price": price_str,
             "url": f"https://www.target.com/p/-/A-{tcin}",
         })
+
+    if skipped_price:
+        logger.info("_parse_redsky: skipped %d items due to non-reg price_type", skipped_price)
     return results
