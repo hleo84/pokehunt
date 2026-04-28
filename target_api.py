@@ -147,7 +147,15 @@ class TargetAPIClient:
             "visitor_id": _fresh_visitor_id(),
         }
         data = await self._get_json(REDSKY_URL, params)
-        return _parse_redsky(data) if data else []
+        if not data:
+            logger.warning("check_tcins: no data returned from redsky")
+            return []
+        keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
+        logger.info("check_tcins raw response keys: %s", keys)
+        results = _parse_redsky(data)
+        if not results:
+            logger.warning("check_tcins: parsed 0 products, raw sample: %s", str(data)[:500])
+        return results
 
 
 # ---------------------------------------------------------------------------
