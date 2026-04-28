@@ -130,9 +130,19 @@ class TargetAPIClient:
             return []
         params = {
             "tcin": ",".join(tcins),
+            "store_id": "3991",
+            "zip": "10001",
+            "state": "NY",
+            "latitude": "40.750",
+            "longitude": "-73.997",
+            "scheduled_delivery_store_id": "3991",
+            "paid_membership": "false",
+            "base_membership": "false",
+            "card_membership": "false",
+            "required_store_id": "3991",
             "country": "US",
             "channel": "WEB",
-            "page": "/c/trading-card-games",
+            "page": "/s/pokemon",
             "key": TARGET_API_KEY,
             "visitor_id": _fresh_visitor_id(),
         }
