@@ -9,7 +9,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 # Target's public frontend API key (embedded in target.com JS bundles)
-TARGET_API_KEY = "ff457966e64d5e877fdbad070f276d18ecec4a01"
+TARGET_API_KEY = "9f36aeafbe60771e321a7cc95a78140772ab3e96"
 
 SEARCH_URL = "https://api.target.com/products/v3/product_summaries"
 REDSKY_URL = (
