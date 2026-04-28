@@ -78,7 +78,7 @@ class TargetAPIClient:
         for attempt in range(retries):
             try:
                 async with session.get(url, params=params, headers=_random_headers()) as resp:
-                    if resp.status == 200:
+                    if resp.status in (200, 206):
                         return await resp.json(content_type=None)
                     if resp.status == 429:
                         wait = 2 ** attempt * 10 + random.uniform(0, 5)
