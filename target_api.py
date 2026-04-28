@@ -44,7 +44,7 @@ def _random_headers() -> dict:
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Origin": "https://www.target.com",
-        "Referer": "https://www.target.com/c/trading-card-games/-/N-5xtg6",
+        "Referer": "https://www.target.com/s?searchTerm=pokemon",
         "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"' if is_chrome else "",
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
@@ -56,7 +56,7 @@ def _random_headers() -> dict:
 
 
 def _fresh_visitor_id() -> str:
-    return uuid.uuid4().hex[:16].upper()
+    return uuid.uuid4().hex.upper()
 
 
 class TargetAPIClient:
