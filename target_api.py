@@ -207,13 +207,24 @@ def _parse_redsky(data: dict) -> list[dict]:
             .get("shipping_options", {})
             .get("availability_status", "UNKNOWN")
         )
-        price = item.get("pricing", {}).get("current_retail")
+
+        # redsky uses "price" key, with fallback to "pricing"
+        pricing = item.get("price") or item.get("pricing") or {}
+        price_type = pricing.get("formatted_current_price_type", "")
+        current_retail = pricing.get("current_retail")
+        formatted_price = pricing.get("formatted_current_price", "N/A")
+
+        # skip items not at regular MSRP (e.g. clearance, sale)
+        if price_type and price_type != "reg":
+            continue
+
+        price_str = f"${current_retail:.2f}" if current_retail else formatted_price
 
         results.append({
             "tcin": tcin,
             "title": title,
             "ship_status": ship_status,
-            "price": f"${price:.2f}" if price else "N/A",
+            "price": price_str,
             "url": f"https://www.target.com/p/-/A-{tcin}",
         })
     return results
