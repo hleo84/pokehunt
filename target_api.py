@@ -129,7 +129,7 @@ class TargetAPIClient:
         if not tcins:
             return []
         params = {
-            "tcin": ",".join(tcins),
+            "tcins": ",".join(tcins),
             "store_id": "2307",
             "zip": "91506",
             "state": "CA",
