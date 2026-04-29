@@ -187,13 +187,27 @@ def _parse_redsky(data: dict) -> list[dict]:
         pricing = item.get("price") or item.get("pricing") or {}
         price_type = pricing.get("formatted_current_price_type", "")
         current_retail = pricing.get("current_retail")
+        reg_retail = pricing.get("reg_retail")
         formatted_price = pricing.get("formatted_current_price", "N/A")
 
-        # Skip non-MSRP items (clearance, sale, etc.)
+        # Keep items at MSRP ("reg") or priced within $5 above MSRP.
+        # Skip deep discounts (clearance/sale more than $5 off).
         if price_type and price_type != "reg":
-            logger.debug("Skipping TCIN %s — price_type=%r", tcin, price_type)
-            skipped_price += 1
-            continue
+            # We have a non-reg price — allow it only if it's ≤ reg + $5
+            if reg_retail is not None and current_retail is not None:
+                if current_retail > reg_retail + 5:
+                    logger.debug(
+                        "Skipping TCIN %s — price_type=%r, current=%.2f, reg=%.2f",
+                        tcin, price_type, current_retail, reg_retail,
+                    )
+                    skipped_price += 1
+                    continue
+                # else: within $5 of MSRP — allow it through
+            else:
+                # No reg_retail to compare against; skip anything non-reg
+                logger.debug("Skipping TCIN %s — price_type=%r (no reg_retail)", tcin, price_type)
+                skipped_price += 1
+                continue
 
         price_str = f"${current_retail:.2f}" if current_retail else formatted_price
 
