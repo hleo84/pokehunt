@@ -136,13 +136,15 @@ async def _playwright_get_cookies() -> str:
             )
             page = await ctx.new_page()
 
+            # domcontentloaded is reliable — networkidle times out on Target
+            # (analytics scripts keep firing indefinitely)
             await page.goto(
                 "https://www.target.com/s?searchTerm=pokemon",
-                wait_until="networkidle",
+                wait_until="domcontentloaded",
                 timeout=60_000,
             )
-            # Extra wait for PerimeterX sensor to fully initialize
-            await asyncio.sleep(5)
+            # Wait for PerimeterX sensor JS to fully execute and set _px2 cookie
+            await asyncio.sleep(8)
 
             cookies = await ctx.cookies()
             cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
