@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import random
@@ -362,9 +363,12 @@ def _parse_search(data: dict) -> list[dict]:
     raw_items = data.get("products", {}).get("items", [])
 
     if raw_items:
-        # Log first item's top-level keys once so we can verify field paths
-        sample = raw_items[0]
-        logger.debug("_parse_search sample keys: %s", list(sample.keys()))
+        # Full JSON dump — tells us exactly where price + seller fields live.
+        # Remove once price and seller filter are confirmed working.
+        logger.info(
+            "SEARCH FULL DUMP (first item): %s",
+            json.dumps(raw_items[0])[:4000],
+        )
 
     skipped = 0
     for item in raw_items:
@@ -390,22 +394,36 @@ def _parse_search(data: dict) -> list[dict]:
             .get("availability_status", "UNKNOWN")
         )
 
-        pricing = item.get("pricing") or {}
+        # Try multiple price field paths
+        pricing = (
+            item.get("pricing")
+            or item.get("price")
+            or {}
+        )
+        # Some search API responses nest values one level deeper
+        if pricing and "current_retail" not in pricing and "price" in pricing:
+            pricing = pricing["price"]
+
         price_type = pricing.get("formatted_current_price_type", "")
         current_retail = pricing.get("current_retail")
         reg_retail = pricing.get("reg_retail")
+        formatted_price = pricing.get("formatted_current_price", "")
 
-        # Same MSRP filter as _parse_redsky — skip deep discounts / way-over-MSRP
-        if price_type and price_type != "reg":
-            if reg_retail is not None and current_retail is not None:
-                if current_retail > reg_retail + 5:
+        # Same MSRP filter as _parse_redsky
+        if pricing:
+            if price_type and price_type != "reg":
+                if reg_retail is not None and current_retail is not None:
+                    if current_retail > reg_retail + 5:
+                        skipped += 1
+                        continue
+                else:
                     skipped += 1
                     continue
-            else:
-                skipped += 1
-                continue
 
-        price_str = f"${current_retail:.2f}" if current_retail else pricing.get("formatted_current_price", "N/A")
+        price_str = (
+            f"${current_retail:.2f}" if current_retail
+            else formatted_price or "N/A"
+        )
 
         results.append({
             "tcin": tcin,
@@ -431,18 +449,12 @@ def _parse_redsky(data: dict) -> list[dict]:
         for k, v in data.items():
             logger.info("  top-level key %r → %s", k, type(v).__name__)
 
-    # Log first item's full structure so we can find price + seller fields
+    # Full JSON dump of first item — tells us exactly where price + seller fields live.
+    # Remove once price and seller filter are confirmed working.
     if raw_items:
-        s = raw_items[0]
-        item_obj = s.get("item", {})
         logger.info(
-            "REDSKY SAMPLE tcin=%s | TOP-LEVEL keys=%s | relationship_type_code=%s | "
-            "product_vendors=%s | all pricing=%s",
-            s.get("tcin"),
-            list(s.keys()),
-            item_obj.get("relationship_type_code"),
-            item_obj.get("product_vendors"),
-            {k: s[k] for k in s if "pric" in k.lower() or "price" in k.lower()},
+            "REDSKY FULL DUMP (first item): %s",
+            json.dumps(raw_items[0])[:4000],
         )
 
     skipped = 0
@@ -470,30 +482,44 @@ def _parse_redsky(data: dict) -> list[dict]:
             or shipping.get("quantity")
         )
 
-        pricing = item.get("price") or item.get("pricing") or {}
+        # Try multiple price field paths — Target has moved this around
+        pricing = (
+            item.get("price")
+            or item.get("pricing")
+            or item.get("item", {}).get("price")
+            or {}
+        )
+        # Some endpoints nest price values one level deeper under a "price" sub-key
+        if pricing and "current_retail" not in pricing and "price" in pricing:
+            pricing = pricing["price"]
+
         price_type = pricing.get("formatted_current_price_type", "")
         current_retail = pricing.get("current_retail")
         reg_retail = pricing.get("reg_retail")
-        formatted_price = pricing.get("formatted_current_price", "N/A")
+        formatted_price = pricing.get("formatted_current_price", "")
 
         logger.debug(
-            "TCIN %s | price_type=%r | current=%.2f | reg=%s",
-            tcin, price_type,
-            current_retail or 0,
-            reg_retail,
+            "TCIN %s | price_type=%r | current=%s | reg=%s",
+            tcin, price_type, current_retail, reg_retail,
         )
 
-        # Keep: MSRP ("reg") or priced within $5 above MSRP
-        if price_type and price_type != "reg":
-            if reg_retail is not None and current_retail is not None:
-                if current_retail > reg_retail + 5:
+        # Keep: MSRP ("reg") or priced within $5 above MSRP.
+        # If we have no price data at all, log a warning and include anyway
+        # (we'll know from the FULL DUMP which field to use).
+        if pricing:
+            if price_type and price_type != "reg":
+                if reg_retail is not None and current_retail is not None:
+                    if current_retail > reg_retail + 5:
+                        skipped += 1
+                        continue
+                else:
                     skipped += 1
                     continue
-            else:
-                skipped += 1
-                continue
 
-        price_str = f"${current_retail:.2f}" if current_retail else formatted_price
+        price_str = (
+            f"${current_retail:.2f}" if current_retail
+            else formatted_price or "N/A"
+        )
 
         results.append({
             "tcin": tcin,
