@@ -10,34 +10,63 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-# Target's public frontend API key (embedded in target.com JS bundles)
 TARGET_API_KEY = "9f36aeafbe60771e321a7cc95a78140772ab3e96"
 
+SEARCH_URL = "https://api.target.com/products/v3/product_summaries"
 REDSKY_URL = (
     "https://redsky.target.com/redsky_aggregations/v1/web"
     "/product_summary_with_fulfillment_v1"
 )
 
-# Paste your browser cookie string here via the TARGET_COOKIES env var.
-# Refresh it every 1-2 days when you start seeing 403s again.
-_RAW_COOKIES: str = os.getenv("TARGET_COOKIES", "")
+SEARCH_TERMS = [
+    "pokemon trading card game",
+    "pokemon booster",
+]
 
-# Pull the visitorId out of the cookie string so the URL param matches.
-_VISITOR_ID_MATCH = re.search(r"visitorId=([A-F0-9]+)", _RAW_COOKIES)
-_COOKIE_VISITOR_ID: str = _VISITOR_ID_MATCH.group(1) if _VISITOR_ID_MATCH else ""
+# ---------------------------------------------------------------------------
+# Cookie management — updated at runtime by Playwright refresh
+# ---------------------------------------------------------------------------
+_raw_cookies: str = os.getenv("TARGET_COOKIES", "")
+_cached_visitor_id: str = ""
 
-if _RAW_COOKIES:
-    logger.info("TARGET_COOKIES loaded (%d chars)", len(_RAW_COOKIES))
-    if _COOKIE_VISITOR_ID:
-        logger.info("visitorId from cookies: %s", _COOKIE_VISITOR_ID)
-else:
-    logger.warning(
-        "TARGET_COOKIES not set — requests will likely 403. "
-        "Copy the cookie header from your browser's DevTools and set it in Railway."
+
+def _extract_visitor_id(cookie_str: str) -> str:
+    m = re.search(r"visitorId=([A-Fa-f0-9]+)", cookie_str)
+    return m.group(1).upper() if m else ""
+
+
+_cached_visitor_id = _extract_visitor_id(_raw_cookies)
+if _raw_cookies:
+    logger.info("TARGET_COOKIES pre-loaded from env (%d chars)", len(_raw_cookies))
+
+
+def update_cookies(cookie_str: str) -> None:
+    """Replace active cookies at runtime (called after Playwright refresh)."""
+    global _raw_cookies, _cached_visitor_id
+    _raw_cookies = cookie_str
+    _cached_visitor_id = _extract_visitor_id(cookie_str)
+    logger.info(
+        "Cookies updated — %d chars, visitorId=%s",
+        len(cookie_str), _cached_visitor_id or "(not found)",
     )
 
+
+def current_cookies() -> str:
+    return _raw_cookies
+
+
+def _visitor_id() -> str:
+    return _cached_visitor_id or uuid.uuid4().hex.upper()
+
+
+class CookiesExpiredError(Exception):
+    """Raised when Target returns HTTP 403 — Playwright refresh needed."""
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
 USER_AGENTS = [
-    # Match the iPhone UA seen in DevTools (Target's PerimeterX is UA-sensitive)
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
@@ -45,10 +74,10 @@ USER_AGENTS = [
 ]
 
 
-def _build_headers(visitor_id: str) -> dict:
+def _build_headers() -> dict:
     ua = random.choice(USER_AGENTS)
     is_mobile = "iPhone" in ua
-    headers = {
+    h = {
         "User-Agent": ua,
         "Accept": "application/json",
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -63,24 +92,28 @@ def _build_headers(visitor_id: str) -> dict:
         "Sec-Fetch-Site": "same-site",
         "priority": "u=1, i",
     }
-    if _RAW_COOKIES:
-        headers["Cookie"] = _RAW_COOKIES
-    return headers
+    if _raw_cookies:
+        h["Cookie"] = _raw_cookies
+    return h
 
 
-def _visitor_id() -> str:
-    """Return the visitorId from cookies (preferred) or generate a fresh one."""
-    return _COOKIE_VISITOR_ID or uuid.uuid4().hex.upper()
+def _product_image_url(tcin: str, api_url: str = "") -> str:
+    """API-provided URL preferred; fall back to Target's scene7 CDN."""
+    if api_url and api_url.startswith("http"):
+        return api_url
+    return f"https://target.scene7.com/is/image/Target/{tcin}?wid=400&hei=400&qlt=80&fmt=webp"
 
 
+# ---------------------------------------------------------------------------
+# API client
+# ---------------------------------------------------------------------------
 class TargetAPIClient:
     def __init__(self):
         self._session: Optional[aiohttp.ClientSession] = None
 
-    async def _session_get(self) -> aiohttp.ClientSession:
+    async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         return self._session
 
     async def close(self):
@@ -88,22 +121,16 @@ class TargetAPIClient:
             await self._session.close()
 
     async def _get_json(self, url: str, params: dict, retries: int = 3) -> Optional[dict]:
-        session = await self._session_get()
-        vid = _visitor_id()
+        session = await self._get_session()
         for attempt in range(retries):
             try:
-                async with session.get(
-                    url, params=params, headers=_build_headers(vid)
-                ) as resp:
+                async with session.get(url, params=params, headers=_build_headers()) as resp:
                     if resp.status in (200, 206):
                         return await resp.json(content_type=None)
                     if resp.status == 403:
-                        logger.error(
-                            "HTTP 403 — PerimeterX blocked the request. "
-                            "Refresh TARGET_COOKIES in Railway env vars with a fresh "
-                            "cookie string from your browser's DevTools."
+                        raise CookiesExpiredError(
+                            "HTTP 403 — PerimeterX blocked; triggering cookie refresh"
                         )
-                        return None
                     if resp.status == 429:
                         wait = 2 ** attempt * 10 + random.uniform(0, 5)
                         logger.warning("Rate limited — waiting %.1fs", wait)
@@ -111,16 +138,53 @@ class TargetAPIClient:
                         continue
                     logger.warning("HTTP %s from %s", resp.status, url)
                     return None
+            except CookiesExpiredError:
+                raise
             except aiohttp.ClientError as exc:
                 logger.warning("Request error (attempt %d): %s", attempt + 1, exc)
                 await asyncio.sleep(2 ** attempt)
         return None
 
+    async def search_all_pokemon_tcg(self, count: int = 40) -> list[dict]:
+        """Keyword search across two terms, deduplicated by TCIN."""
+        batches = await asyncio.gather(
+            *[self._search_one_term(t, count) for t in SEARCH_TERMS]
+        )
+        seen: dict[str, dict] = {}
+        for batch in batches:
+            for p in batch:
+                seen.setdefault(p["tcin"], p)
+        return list(seen.values())
+
+    async def _search_one_term(self, term: str, count: int) -> list[dict]:
+        params = {
+            "search_term": term,
+            "channel": "WEB",
+            "count": count,
+            "default_purchasability_filter": "false",
+            "include_list": "facets,promotions",
+            "offset": 0,
+            "platform": "desktop",
+            "key": TARGET_API_KEY,
+            "visitor_id": _visitor_id(),
+        }
+        data = await self._get_json(SEARCH_URL, params)
+        if not data:
+            return []
+        results = _parse_search(data)
+        if not results:
+            total = data.get("products", {}).get("total_results", "unknown")
+            logger.warning("Search %r → 0 products (API total=%s)", term, total)
+        return results
+
+    # ------------------------------------------------------------------
+    # TCIN mode — disabled by default, kept for easy re-enablement
+    # Uncomment the call in bot.py _fetch_products() to activate.
+    # ------------------------------------------------------------------
     async def check_tcins(self, tcins: list[str]) -> list[dict]:
-        """Fetch live fulfillment data for a list of specific TCINs."""
+        """Direct TCIN lookup (faster, but misses unknown products)."""
         if not tcins:
             return []
-        vid = _visitor_id()
         params = {
             "tcins": ",".join(tcins),
             "store_id": "2307",
@@ -137,37 +201,66 @@ class TargetAPIClient:
             "channel": "WEB",
             "page": "/s/pokemon",
             "key": TARGET_API_KEY,
-            "visitor_id": vid,
+            "visitor_id": _visitor_id(),
         }
         data = await self._get_json(REDSKY_URL, params)
         if not data:
-            logger.warning("check_tcins: no data returned from redsky")
             return []
-        keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
-        logger.info("check_tcins raw response keys: %s", keys)
-        results = _parse_redsky(data)
-        if not results:
-            logger.warning("check_tcins: parsed 0 products, raw sample: %s", str(data)[:2000])
-        return results
+        return _parse_redsky(data)
 
 
 # ---------------------------------------------------------------------------
-# Parser
+# Parsers
 # ---------------------------------------------------------------------------
+
+def _parse_search(data: dict) -> list[dict]:
+    results = []
+    for item in data.get("products", {}).get("items", []):
+        product = item.get("product", {})
+        tcin = product.get("tcin", "")
+        if not tcin:
+            continue
+
+        title = (
+            product.get("item", {})
+            .get("product_description", {})
+            .get("title", "Unknown Product")
+        )
+        api_img = (
+            product.get("item", {})
+            .get("enrichment", {})
+            .get("images", {})
+            .get("primary_image_url", "")
+        )
+        ship_status = (
+            item.get("fulfillment", {})
+            .get("shipping_options", {})
+            .get("availability_status", "UNKNOWN")
+        )
+        price = item.get("pricing", {}).get("current_retail")
+
+        results.append({
+            "tcin": tcin,
+            "title": title,
+            "ship_status": ship_status,
+            "quantity": None,
+            "price": f"${price:.2f}" if price else "N/A",
+            "image": _product_image_url(tcin, api_img),
+            "url": f"https://www.target.com/p/-/A-{tcin}",
+        })
+    return results
+
 
 def _parse_redsky(data: dict) -> list[dict]:
     results = []
     raw_items = data.get("data", {}).get("product_summaries", [])
-    logger.info("_parse_redsky: %d raw items at data.product_summaries", len(raw_items))
+    logger.info("_parse_redsky: %d items", len(raw_items))
 
     if not raw_items and isinstance(data, dict):
         for k, v in data.items():
-            logger.info(
-                "  top-level key %r → %s (len=%s)",
-                k, type(v).__name__, len(v) if hasattr(v, "__len__") else "n/a",
-            )
+            logger.info("  top-level key %r → %s", k, type(v).__name__)
 
-    skipped_price = 0
+    skipped = 0
     for item in raw_items:
         tcin = item.get("tcin", "")
         if not tcin:
@@ -178,10 +271,18 @@ def _parse_redsky(data: dict) -> list[dict]:
             .get("product_description", {})
             .get("title", "Unknown Product")
         )
-        ship_status = (
-            item.get("fulfillment", {})
-            .get("shipping_options", {})
-            .get("availability_status", "UNKNOWN")
+        api_img = (
+            item.get("item", {})
+            .get("enrichment", {})
+            .get("images", {})
+            .get("primary_image_url", "")
+        )
+
+        shipping = item.get("fulfillment", {}).get("shipping_options", {})
+        ship_status = shipping.get("availability_status", "UNKNOWN")
+        qty = (
+            shipping.get("available_to_promise_quantity")
+            or shipping.get("quantity")
         )
 
         pricing = item.get("price") or item.get("pricing") or {}
@@ -190,23 +291,14 @@ def _parse_redsky(data: dict) -> list[dict]:
         reg_retail = pricing.get("reg_retail")
         formatted_price = pricing.get("formatted_current_price", "N/A")
 
-        # Keep items at MSRP ("reg") or priced within $5 above MSRP.
-        # Skip deep discounts (clearance/sale more than $5 off).
+        # Keep: MSRP ("reg") or priced within $5 above MSRP
         if price_type and price_type != "reg":
-            # We have a non-reg price — allow it only if it's ≤ reg + $5
             if reg_retail is not None and current_retail is not None:
                 if current_retail > reg_retail + 5:
-                    logger.debug(
-                        "Skipping TCIN %s — price_type=%r, current=%.2f, reg=%.2f",
-                        tcin, price_type, current_retail, reg_retail,
-                    )
-                    skipped_price += 1
+                    skipped += 1
                     continue
-                # else: within $5 of MSRP — allow it through
             else:
-                # No reg_retail to compare against; skip anything non-reg
-                logger.debug("Skipping TCIN %s — price_type=%r (no reg_retail)", tcin, price_type)
-                skipped_price += 1
+                skipped += 1
                 continue
 
         price_str = f"${current_retail:.2f}" if current_retail else formatted_price
@@ -215,10 +307,12 @@ def _parse_redsky(data: dict) -> list[dict]:
             "tcin": tcin,
             "title": title,
             "ship_status": ship_status,
+            "quantity": qty,
             "price": price_str,
+            "image": _product_image_url(tcin, api_img),
             "url": f"https://www.target.com/p/-/A-{tcin}",
         })
 
-    if skipped_price:
-        logger.info("_parse_redsky: skipped %d items (non-reg price_type)", skipped_price)
+    if skipped:
+        logger.info("_parse_redsky: skipped %d non-MSRP items", skipped)
     return results
