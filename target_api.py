@@ -125,19 +125,11 @@ def _cookie_str_to_playwright(cookie_str: str) -> list[dict]:
     return cookies
 
 
-# Third-party domains blocked in Playwright — analytics, ads, tracking.
-# Target's own domains (target.com, redsky.target.com) are always allowed.
-_BLOCKED_DOMAINS = {
-    "google-analytics.com", "googletagmanager.com", "googlesyndication.com",
-    "doubleclick.net", "googleadservices.com",
-    "omtrdc.net", "demdex.net", "adobe.com", "adobedtm.com",
-    "mparticle.com", "segment.io", "segment.com",
-    "facebook.com", "facebook.net", "fbcdn.net",
-    "twitter.com", "t.co",
-    "quantserve.com", "scorecardresearch.com",
-    "perimeterx.net",   # PX reporting (cookies already set — don't need callbacks)
-    "akstat.io", "akamaiedge.net",
-}
+# Heavy file extensions to block in Playwright (saves memory, speeds up loads)
+_BLOCK_EXTENSIONS = re.compile(
+    r"\.(css|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|mp[34]|wav|avi|mov)(\?.*)?$",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # API client
@@ -248,23 +240,13 @@ class TargetAPIClient:
 
                 page = await ctx.new_page()
 
-                async def _should_block(route):
-                    url = route.request.url
-                    # Block by file extension
-                    if any(url.lower().endswith(ext) for ext in (
-                        ".css", ".png", ".jpg", ".jpeg", ".gif", ".webp",
-                        ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot",
-                        ".mp4", ".mp3", ".avi", ".mov",
-                    )):
-                        await route.abort()
-                        return
-                    # Block third-party analytics / ad domains
-                    if any(d in url for d in _BLOCKED_DOMAINS):
-                        await route.abort()
-                        return
-                    await route.continue_()
-
-                await page.route("**/*", _should_block)
+                # Simple extension-based blocking with a fast sync lambda.
+                # Avoid async route handlers — they add latency to every request
+                # and can cause timing issues that prevent API calls from firing.
+                await page.route(
+                    _BLOCK_EXTENSIONS,
+                    lambda route: route.abort(),
+                )
 
                 captured: list[tuple[str, dict]] = []
                 got_data = asyncio.Event()
@@ -287,11 +269,21 @@ class TargetAPIClient:
                 page.on("response", handle_response)
 
                 search_url = f"https://www.target.com/s?searchTerm={term.replace(' ', '+')}"
-                try:
-                    await page.goto(search_url, wait_until="domcontentloaded", timeout=60_000)
-                except Exception as exc:
-                    logger.warning("page.goto failed for %r: %s", term, exc)
+                nav_ok = False
+                for attempt in range(2):  # retry once on ERR_FAILED
+                    try:
+                        await page.goto(search_url, wait_until="domcontentloaded", timeout=60_000)
+                        nav_ok = True
+                        break
+                    except Exception as exc:
+                        logger.warning(
+                            "page.goto failed for %r (attempt %d): %s", term, attempt + 1, exc
+                        )
+                        if attempt == 0:
+                            await asyncio.sleep(3)
+                if not nav_ok:
                     await ctx.close()
+                    ctx = None
                     continue
 
                 # Wait up to 8s for data, but close immediately once we have it
