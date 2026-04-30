@@ -468,16 +468,10 @@ async def on_ready():
     else:
         logger.info("No Redis state — will seed on first poll")
 
-    # Load cookies: Redis → env var → Playwright (in that order)
-    cached = await redis_client.get(REDIS_COOKIES_KEY)
-    if cached:
-        target_api.update_cookies(cached)
-        logger.info("Cookies loaded from Redis")
-    elif target_api.current_cookies():
-        logger.info("Using TARGET_COOKIES from env var")
-    else:
-        logger.info("No cookies found — running Playwright on startup…")
-        await _refresh_cookies()
+    # Always refresh cookies via Playwright on startup — guarantees fresh PX tokens.
+    # Redis/env-var cookies may be stale after a redeploy; Playwright is the source of truth.
+    logger.info("Running Playwright cookie refresh on startup…")
+    await _refresh_cookies()
 
     logger.info("Logged in as %s (id=%s)", bot.user, bot.user.id)
     monitor_task.start()
