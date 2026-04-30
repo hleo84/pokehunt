@@ -431,6 +431,19 @@ def _parse_redsky(data: dict) -> list[dict]:
         for k, v in data.items():
             logger.info("  top-level key %r → %s", k, type(v).__name__)
 
+    # Log first item's seller + pricing structure so we can tune filters
+    if raw_items:
+        s = raw_items[0]
+        item_obj = s.get("item", {})
+        logger.info(
+            "REDSKY SAMPLE tcin=%s | item keys=%s | seller=%s | fulfillment_type=%s | pricing=%s",
+            s.get("tcin"),
+            list(item_obj.keys()),
+            item_obj.get("seller"),
+            s.get("fulfillment", {}).get("shipping_options", {}).get("fulfillment_type"),
+            s.get("price") or s.get("pricing"),
+        )
+
     skipped = 0
     for item in raw_items:
         tcin = item.get("tcin", "")
@@ -461,6 +474,13 @@ def _parse_redsky(data: dict) -> list[dict]:
         current_retail = pricing.get("current_retail")
         reg_retail = pricing.get("reg_retail")
         formatted_price = pricing.get("formatted_current_price", "N/A")
+
+        logger.debug(
+            "TCIN %s | price_type=%r | current=%.2f | reg=%s",
+            tcin, price_type,
+            current_retail or 0,
+            reg_retail,
+        )
 
         # Keep: MSRP ("reg") or priced within $5 above MSRP
         if price_type and price_type != "reg":
