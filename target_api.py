@@ -252,27 +252,36 @@ class TargetAPIClient:
                 captured: list[tuple[str, dict]] = []
                 got_data = asyncio.Event()
 
-                _TARGET_DOMAINS = ("redsky.target.com", "api.target.com", "target.com")
+                _TARGET_DOMAINS = ("redsky.target.com", "api.target.com")
+
+                def _has_products(d: dict) -> bool:
+                    """Quick check — does this JSON blob contain product listings?"""
+                    return bool(
+                        d.get("data", {}).get("product_summaries")
+                        or d.get("products", {}).get("items")
+                        or d.get("data", {}).get("search", {}).get("products")
+                    )
 
                 async def handle_response(response, _captured=captured, _got=got_data):
                     url = response.url
-                    # Skip non-Target or non-success responses
                     if response.status not in (200, 206):
                         return
                     if not any(d in url for d in _TARGET_DOMAINS):
                         return
-                    # Log every Target API call so we can see what URL is used
                     ct = response.headers.get("content-type", "")
-                    if "json" in ct:
-                        try:
-                            data = await response.json()
-                            _captured.append((url, data))
-                            logger.info("Intercepted JSON: %s", url.split("?")[0])
-                            _got.set()  # signal — close page early once we have data
-                        except Exception:
-                            pass
-                    else:
-                        logger.debug("Target non-JSON: %s", url.split("?")[0])
+                    if "json" not in ct:
+                        return
+                    try:
+                        data = await response.json()
+                        # Always log the URL so we can see what Target is calling
+                        logger.info("Target JSON: %s", url.split("?")[0])
+                        _captured.append((url, data))
+                        # Only signal (and allow early page-close) on actual product data
+                        if _has_products(data):
+                            logger.info("  → product data confirmed, closing page early")
+                            _got.set()
+                    except Exception:
+                        pass
 
                 page.on("response", handle_response)
 
