@@ -105,10 +105,11 @@ def _build_headers() -> dict:
 
 
 def _product_image_url(tcin: str, api_url: str = "") -> str:
-    """API-provided URL preferred; fall back to Target's scene7 CDN."""
+    """API-provided URL preferred; fall back to Target's scene7 CDN (JPEG for Discord)."""
     if api_url and api_url.startswith("http"):
-        return api_url
-    return f"https://target.scene7.com/is/image/Target/{tcin}?wid=400&hei=400&qlt=80&fmt=webp"
+        # Force JPEG — Discord doesn't always render webp thumbnails
+        return re.sub(r"fmt=\w+", "fmt=jpeg", api_url) if "fmt=" in api_url else api_url
+    return f"https://target.scene7.com/is/image/Target/{tcin}?wid=400&hei=400&fmt=jpeg"
 
 
 def _cookie_str_to_playwright(cookie_str: str) -> list[dict]:
@@ -300,13 +301,16 @@ class TargetAPIClient:
                 ctx = None
 
                 for endpoint_url, data in captured:
-                    results = _parse_search(data) or _parse_redsky(data)
+                    search_results = _parse_search(data)
+                    redsky_results = _parse_redsky(data)
+                    results = search_results or redsky_results
+                    parser_used = "search" if search_results else ("redsky" if redsky_results else "none")
                     for p in results:
                         seen.setdefault(p["tcin"], p)
                     if results:
                         logger.info(
-                            "Search %r → %d products via %s",
-                            term, len(results), endpoint_url.split("?")[0],
+                            "Search %r → %d products via %s (parser=%s)",
+                            term, len(results), endpoint_url.split("?")[0], parser_used,
                         )
 
             except Exception:
@@ -359,7 +363,15 @@ class TargetAPIClient:
 
 def _parse_search(data: dict) -> list[dict]:
     results = []
-    for item in data.get("products", {}).get("items", []):
+    raw_items = data.get("products", {}).get("items", [])
+
+    if raw_items:
+        # Log first item's top-level keys once so we can verify field paths
+        sample = raw_items[0]
+        logger.debug("_parse_search sample keys: %s", list(sample.keys()))
+
+    skipped = 0
+    for item in raw_items:
         product = item.get("product", {})
         tcin = product.get("tcin", "")
         if not tcin:
@@ -381,17 +393,36 @@ def _parse_search(data: dict) -> list[dict]:
             .get("shipping_options", {})
             .get("availability_status", "UNKNOWN")
         )
-        price = item.get("pricing", {}).get("current_retail")
+
+        pricing = item.get("pricing") or {}
+        price_type = pricing.get("formatted_current_price_type", "")
+        current_retail = pricing.get("current_retail")
+        reg_retail = pricing.get("reg_retail")
+
+        # Same MSRP filter as _parse_redsky — skip deep discounts / way-over-MSRP
+        if price_type and price_type != "reg":
+            if reg_retail is not None and current_retail is not None:
+                if current_retail > reg_retail + 5:
+                    skipped += 1
+                    continue
+            else:
+                skipped += 1
+                continue
+
+        price_str = f"${current_retail:.2f}" if current_retail else pricing.get("formatted_current_price", "N/A")
 
         results.append({
             "tcin": tcin,
             "title": title,
             "ship_status": ship_status,
             "quantity": None,
-            "price": f"${price:.2f}" if price else "N/A",
+            "price": price_str,
             "image": _product_image_url(tcin, api_img),
             "url": f"https://www.target.com/p/-/A-{tcin}",
         })
+
+    if skipped:
+        logger.info("_parse_search: skipped %d non-MSRP items", skipped)
     return results
 
 
