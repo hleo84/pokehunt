@@ -431,17 +431,18 @@ def _parse_redsky(data: dict) -> list[dict]:
         for k, v in data.items():
             logger.info("  top-level key %r → %s", k, type(v).__name__)
 
-    # Log first item's seller + pricing structure so we can tune filters
+    # Log first item's full structure so we can find price + seller fields
     if raw_items:
         s = raw_items[0]
         item_obj = s.get("item", {})
         logger.info(
-            "REDSKY SAMPLE tcin=%s | item keys=%s | seller=%s | fulfillment_type=%s | pricing=%s",
+            "REDSKY SAMPLE tcin=%s | TOP-LEVEL keys=%s | relationship_type_code=%s | "
+            "product_vendors=%s | all pricing=%s",
             s.get("tcin"),
-            list(item_obj.keys()),
-            item_obj.get("seller"),
-            s.get("fulfillment", {}).get("shipping_options", {}).get("fulfillment_type"),
-            s.get("price") or s.get("pricing"),
+            list(s.keys()),
+            item_obj.get("relationship_type_code"),
+            item_obj.get("product_vendors"),
+            {k: s[k] for k in s if "pric" in k.lower() or "price" in k.lower()},
         )
 
     skipped = 0
