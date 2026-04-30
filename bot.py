@@ -263,11 +263,12 @@ async def _process_products(channel: discord.TextChannel, products: list[dict]):
 
 
 async def _fetch_products() -> list[dict]:
-    # Keyword search — discovers any Pokemon TCG product automatically.
-    # To re-enable TCIN mode, comment the return and uncomment below:
+    # Playwright-based search — loads Target's actual search page and intercepts
+    # whatever product API call Target's frontend makes. No hardcoded endpoint needed.
+    # To switch to TCIN mode instead, comment the return and uncomment below:
     # if WATCH_TCINS:
     #     return await api_client.check_tcins(WATCH_TCINS)
-    return await api_client.search_all_pokemon_tcg(count=40)
+    return await api_client.playwright_search(target_api.SEARCH_TERMS)
 
 
 # ---------------------------------------------------------------------------

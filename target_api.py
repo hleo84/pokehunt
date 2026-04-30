@@ -111,6 +111,19 @@ def _product_image_url(tcin: str, api_url: str = "") -> str:
     return f"https://target.scene7.com/is/image/Target/{tcin}?wid=400&hei=400&qlt=80&fmt=webp"
 
 
+def _cookie_str_to_playwright(cookie_str: str) -> list[dict]:
+    """Convert a raw cookie header string into Playwright's cookie dict format."""
+    cookies = []
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, _, value = part.partition("=")
+        for domain in (".target.com", "www.target.com", "redsky.target.com"):
+            cookies.append({"name": name.strip(), "value": value, "domain": domain, "path": "/"})
+    return cookies
+
+
 # ---------------------------------------------------------------------------
 # API client
 # ---------------------------------------------------------------------------
@@ -152,37 +165,86 @@ class TargetAPIClient:
                 await asyncio.sleep(2 ** attempt)
         return None
 
-    async def search_all_pokemon_tcg(self, count: int = 40) -> list[dict]:
-        """Keyword search across two terms, deduplicated by TCIN."""
-        batches = await asyncio.gather(
-            *[self._search_one_term(t, count) for t in SEARCH_TERMS]
-        )
+    async def playwright_search(self, terms: list[str]) -> list[dict]:
+        """
+        Load Target's search page in Playwright and intercept whatever product
+        API call Target's own frontend makes. Automatically adapts if Target
+        ever changes their endpoint.
+        """
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            logger.error("playwright not installed")
+            return []
+
         seen: dict[str, dict] = {}
-        for batch in batches:
-            for p in batch:
-                seen.setdefault(p["tcin"], p)
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox",
+                      "--disable-dev-shm-usage", "--disable-gpu"],
+            )
+
+            async def _search_one(term: str):
+                ctx = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) "
+                        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                        "Version/18.5 Mobile/15E148 Safari/604.1"
+                    ),
+                    viewport={"width": 390, "height": 844},
+                    locale="en-US",
+                )
+                if _raw_cookies:
+                    await ctx.add_cookies(_cookie_str_to_playwright(_raw_cookies))
+
+                page = await ctx.new_page()
+                captured: list[tuple[str, dict]] = []
+
+                async def handle_response(response):
+                    url = response.url
+                    if (
+                        response.status in (200, 206)
+                        and ("redsky.target.com" in url or "api.target.com" in url)
+                        and any(k in url for k in ("product_summar", "plp_search", "fulfillment"))
+                    ):
+                        try:
+                            data = await response.json()
+                            captured.append((url, data))
+                            logger.info("Intercepted: %s", url.split("?")[0])
+                        except Exception:
+                            pass
+
+                page.on("response", handle_response)
+                search_url = f"https://www.target.com/s?searchTerm={term.replace(' ', '+')}"
+                await page.goto(search_url, wait_until="networkidle", timeout=60_000)
+                await asyncio.sleep(3)
+
+                for endpoint_url, data in captured:
+                    results = _parse_search(data) or _parse_redsky(data)
+                    for p in results:
+                        seen.setdefault(p["tcin"], p)
+                    if results:
+                        logger.info(
+                            "Search %r → %d products (via %s)",
+                            term, len(results), endpoint_url.split("?")[0],
+                        )
+
+                if not captured:
+                    logger.warning("Search %r — no product API response intercepted", term)
+
+                await ctx.close()
+
+            # Run all search terms in parallel (one page each, same browser)
+            await asyncio.gather(*[_search_one(t) for t in terms])
+            await browser.close()
+
+        logger.info("playwright_search: %d unique products across %d terms", len(seen), len(terms))
         return list(seen.values())
 
-    async def _search_one_term(self, term: str, count: int) -> list[dict]:
-        params = {
-            "search_term": term,
-            "channel": "WEB",
-            "count": count,
-            "default_purchasability_filter": "false",
-            "include_list": "facets,promotions",
-            "offset": 0,
-            "platform": "desktop",
-            "key": TARGET_API_KEY,
-            "visitor_id": _visitor_id(),
-        }
-        data = await self._get_json(SEARCH_URL, params)
-        if not data:
-            return []
-        results = _parse_search(data)
-        if not results:
-            total = data.get("products", {}).get("total_results", "unknown")
-            logger.warning("Search %r → 0 products (API total=%s)", term, total)
-        return results
+    # Legacy direct API search — kept for reference (returns 404 as of 2026)
+    # async def search_all_pokemon_tcg(self, count: int = 40) -> list[dict]: ...
 
     # ------------------------------------------------------------------
     # TCIN mode — disabled by default, kept for easy re-enablement
