@@ -362,13 +362,9 @@ def _parse_search(data: dict) -> list[dict]:
     results = []
     raw_items = data.get("products", {}).get("items", [])
 
-    if raw_items:
-        # Full JSON dump — tells us exactly where price + seller fields live.
-        # Remove once price and seller filter are confirmed working.
-        logger.info(
-            "SEARCH FULL DUMP (first item): %s",
-            json.dumps(raw_items[0])[:4000],
-        )
+    # Dump the first *non-marketplace* item so we can see the price structure.
+    # Remove once price field is confirmed working.
+    _dumped = False
 
     skipped = 0
     for item in raw_items:
@@ -376,6 +372,19 @@ def _parse_search(data: dict) -> list[dict]:
         tcin = product.get("tcin", "")
         if not tcin:
             continue
+
+        # ── Seller filter ────────────────────────────────────────────────────
+        if product.get("item", {}).get("is_marketplace", False):
+            logger.debug("Skipping marketplace item TCIN %s (search)", tcin)
+            skipped += 1
+            continue
+
+        if not _dumped:
+            logger.info(
+                "SEARCH FULL DUMP (first Target item): %s",
+                json.dumps(item)[:4000],
+            )
+            _dumped = True
 
         title = (
             product.get("item", {})
@@ -449,19 +458,30 @@ def _parse_redsky(data: dict) -> list[dict]:
         for k, v in data.items():
             logger.info("  top-level key %r → %s", k, type(v).__name__)
 
-    # Full JSON dump of first item — tells us exactly where price + seller fields live.
-    # Remove once price and seller filter are confirmed working.
-    if raw_items:
-        logger.info(
-            "REDSKY FULL DUMP (first item): %s",
-            json.dumps(raw_items[0])[:4000],
-        )
+    # Dump the first *non-marketplace* item so we can see the price structure.
+    # Remove once price field is confirmed working.
+    _dumped = False
 
     skipped = 0
     for item in raw_items:
         tcin = item.get("tcin", "")
         if not tcin:
             continue
+
+        # ── Seller filter: Target-sold only ──────────────────────────────────
+        # is_marketplace=True means a Target Plus / third-party seller listing.
+        # These have no price data in the summary and are always over MSRP.
+        if item.get("item", {}).get("is_marketplace", False):
+            logger.debug("Skipping marketplace item TCIN %s", tcin)
+            skipped += 1
+            continue
+
+        if not _dumped:
+            logger.info(
+                "REDSKY FULL DUMP (first Target item): %s",
+                json.dumps(item)[:4000],
+            )
+            _dumped = True
 
         title = (
             item.get("item", {})
