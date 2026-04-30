@@ -252,20 +252,27 @@ class TargetAPIClient:
                 captured: list[tuple[str, dict]] = []
                 got_data = asyncio.Event()
 
-                async def handle_response(response, _captured=captured):
+                _TARGET_DOMAINS = ("redsky.target.com", "api.target.com", "target.com")
+
+                async def handle_response(response, _captured=captured, _got=got_data):
                     url = response.url
-                    if (
-                        response.status in (200, 206)
-                        and ("redsky.target.com" in url or "api.target.com" in url)
-                        and any(k in url for k in ("product_summar", "plp_search_v"))
-                    ):
+                    # Skip non-Target or non-success responses
+                    if response.status not in (200, 206):
+                        return
+                    if not any(d in url for d in _TARGET_DOMAINS):
+                        return
+                    # Log every Target API call so we can see what URL is used
+                    ct = response.headers.get("content-type", "")
+                    if "json" in ct:
                         try:
                             data = await response.json()
                             _captured.append((url, data))
-                            logger.info("Intercepted: %s", url.split("?")[0])
-                            got_data.set()  # signal — close page early
+                            logger.info("Intercepted JSON: %s", url.split("?")[0])
+                            _got.set()  # signal — close page early once we have data
                         except Exception:
                             pass
+                    else:
+                        logger.debug("Target non-JSON: %s", url.split("?")[0])
 
                 page.on("response", handle_response)
 
@@ -287,11 +294,15 @@ class TargetAPIClient:
                     ctx = None
                     continue
 
-                # Wait up to 8s for data, but close immediately once we have it
+                # Wait up to 15s for any JSON from Target (was 8s — increased for slower pages)
                 try:
-                    await asyncio.wait_for(got_data.wait(), timeout=8)
+                    await asyncio.wait_for(got_data.wait(), timeout=15)
                 except asyncio.TimeoutError:
-                    logger.warning("Search %r — no product API response intercepted", term)
+                    logger.warning(
+                        "Search %r — no JSON from Target intercepted in 15s "
+                        "(captured %d responses total)",
+                        term, len(captured),
+                    )
 
                 # Close page right away — no need to wait for full render
                 await ctx.close()
