@@ -403,6 +403,18 @@ async def cmd_status(ctx: commands.Context):
     await ctx.send(msg)
 
 
+@bot.command(name="searchterms")
+async def cmd_searchterms(ctx: commands.Context):
+    """Show active keyword search terms."""
+    terms = target_api.SEARCH_TERMS
+    lines = "\n".join(f"• `{t}`" for t in terms)
+    await ctx.send(
+        f"**Active search terms ({len(terms)}):**\n{lines}\n\n"
+        "To add/change terms, update `SEARCH_TERMS` in Railway Variables "
+        "(comma-separated) and redeploy."
+    )
+
+
 @bot.command(name="watchlist")
 async def cmd_watchlist(ctx: commands.Context):
     """Show monitoring mode and settings."""

@@ -18,10 +18,17 @@ REDSKY_URL = (
     "/product_summary_with_fulfillment_v1"
 )
 
-SEARCH_TERMS = [
+# Editable in Railway Variables as a comma-separated list.
+# e.g. SEARCH_TERMS=pokemon trading card game,pokemon booster,pokemon elite trainer box
+_DEFAULT_SEARCH_TERMS = [
     "pokemon trading card game",
     "pokemon booster",
 ]
+SEARCH_TERMS: list[str] = [
+    t.strip()
+    for t in os.getenv("SEARCH_TERMS", "").split(",")
+    if t.strip()
+] or _DEFAULT_SEARCH_TERMS
 
 # ---------------------------------------------------------------------------
 # Cookie management — updated at runtime by Playwright refresh
