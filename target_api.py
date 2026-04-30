@@ -168,10 +168,8 @@ class TargetAPIClient:
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--single-process",
                 "--disable-extensions",
-                "--disable-background-networking",
-                "--blink-settings=imagesEnabled=false",  # disable images at engine level
+                "--blink-settings=imagesEnabled=false",
             ],
         )
         logger.info("Chromium launched (persistent — stays alive between polls)")
@@ -230,6 +228,12 @@ class TargetAPIClient:
         for term in terms:
             ctx = None
             try:
+                # If the browser crashed on a previous term, restart it
+                if not browser.is_connected():
+                    logger.warning("Browser disconnected — restarting Chromium")
+                    self._browser = None
+                    browser = await self._get_browser()
+
                 ctx = await browser.new_context(
                     user_agent=(
                         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) "
