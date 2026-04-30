@@ -182,62 +182,88 @@ class TargetAPIClient:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox",
-                      "--disable-dev-shm-usage", "--disable-gpu"],
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--single-process",          # lower memory footprint
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                ],
             )
 
-            async def _search_one(term: str):
-                ctx = await browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) "
-                        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-                        "Version/18.5 Mobile/15E148 Safari/604.1"
-                    ),
-                    viewport={"width": 390, "height": 844},
-                    locale="en-US",
-                )
-                if _raw_cookies:
-                    await ctx.add_cookies(_cookie_str_to_playwright(_raw_cookies))
+            # Run terms sequentially — parallel contexts crash on low memory
+            for term in terms:
+                try:
+                    ctx = await browser.new_context(
+                        user_agent=(
+                            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) "
+                            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                            "Version/18.5 Mobile/15E148 Safari/604.1"
+                        ),
+                        viewport={"width": 390, "height": 844},
+                        locale="en-US",
+                    )
+                    if _raw_cookies:
+                        await ctx.add_cookies(_cookie_str_to_playwright(_raw_cookies))
 
-                page = await ctx.new_page()
-                captured: list[tuple[str, dict]] = []
+                    page = await ctx.new_page()
 
-                async def handle_response(response):
-                    url = response.url
-                    if (
-                        response.status in (200, 206)
-                        and ("redsky.target.com" in url or "api.target.com" in url)
-                        and any(k in url for k in ("product_summar", "plp_search", "fulfillment"))
-                    ):
-                        try:
-                            data = await response.json()
-                            captured.append((url, data))
-                            logger.info("Intercepted: %s", url.split("?")[0])
-                        except Exception:
-                            pass
+                    # Block heavy assets — images/fonts/media not needed for API interception
+                    await page.route(
+                        "**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2,ttf,eot,mp4,mp3}",
+                        lambda route: route.abort(),
+                    )
 
-                page.on("response", handle_response)
-                search_url = f"https://www.target.com/s?searchTerm={term.replace(' ', '+')}"
-                await page.goto(search_url, wait_until="networkidle", timeout=60_000)
-                await asyncio.sleep(3)
+                    captured: list[tuple[str, dict]] = []
 
-                for endpoint_url, data in captured:
-                    results = _parse_search(data) or _parse_redsky(data)
-                    for p in results:
-                        seen.setdefault(p["tcin"], p)
-                    if results:
-                        logger.info(
-                            "Search %r → %d products (via %s)",
-                            term, len(results), endpoint_url.split("?")[0],
-                        )
+                    async def handle_response(response, _captured=captured):
+                        url = response.url
+                        # Only catch real product data endpoints — not analytics/intents
+                        if (
+                            response.status in (200, 206)
+                            and ("redsky.target.com" in url or "api.target.com" in url)
+                            and any(k in url for k in ("product_summar", "plp_search_v"))
+                        ):
+                            try:
+                                data = await response.json()
+                                _captured.append((url, data))
+                                logger.info("Intercepted: %s", url.split("?")[0])
+                            except Exception:
+                                pass
 
-                if not captured:
-                    logger.warning("Search %r — no product API response intercepted", term)
+                    page.on("response", handle_response)
 
-                await ctx.close()
+                    search_url = f"https://www.target.com/s?searchTerm={term.replace(' ', '+')}"
+                    try:
+                        await page.goto(search_url, wait_until="domcontentloaded", timeout=60_000)
+                    except Exception as exc:
+                        logger.warning("page.goto failed for %r: %s", term, exc)
+                        await ctx.close()
+                        continue
 
-            # Run all search terms in parallel (one page each, same browser)
-            await asyncio.gather(*[_search_one(t) for t in terms])
+                    # Wait for API calls to fire after DOM loads
+                    await asyncio.sleep(6)
+
+                    for endpoint_url, data in captured:
+                        results = _parse_search(data) or _parse_redsky(data)
+                        for p in results:
+                            seen.setdefault(p["tcin"], p)
+                        if results:
+                            logger.info(
+                                "Search %r → %d products via %s",
+                                term, len(results), endpoint_url.split("?")[0],
+                            )
+
+                    if not captured:
+                        logger.warning("Search %r — no product API response intercepted", term)
+
+                    await ctx.close()
+
+                except Exception:
+                    logger.exception("Error searching term %r", term)
+
             await browser.close()
 
         logger.info("playwright_search: %d unique products across %d terms", len(seen), len(terms))
